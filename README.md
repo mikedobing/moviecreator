@@ -1,7 +1,7 @@
-# Novel-to-Screen Pipeline — Phase 1
-## Novel Ingestion & Story Bible Extraction
+# Novel-to-Screen Pipeline — Phase 1 & 2
+## Novel Ingestion, Story Bible Extraction, and Screenplay Conversion
 
-**Version:** 1.0  
+**Version:** 2.0  
 **Stack:** Python 3.11+  
 **Storage:** SQLite + ChromaDB (local vector store)  
 **Input:** PDF novels
@@ -10,9 +10,9 @@
 
 ## Overview
 
-Phase 1 of the Novel-to-Screen pipeline converts PDF novels into structured Story Bibles — comprehensive databases of characters, locations, narrative tone, and world details that ensure consistency for downstream video generation.
+This is a complete pipeline that converts PDF novels into professional screenplay format with detailed scene breakdowns for video generation.
 
-### What It Does
+### Phase 1: Novel Ingestion & Story Bible Extraction
 
 1. **Ingests PDF novels** — Extracts clean text, handles chapter detection
 2. **Chunks text** — Splits into meaningful narrative units with overlap
@@ -23,6 +23,13 @@ Phase 1 of the Novel-to-Screen pipeline converts PDF novels into structured Stor
    - Plot summary and themes
    - World-building rules
 4. **Stores everything** — SQLite for structured data, ChromaDB for semantic search
+
+### Phase 2: Screenplay Conversion & Scene Breakdown
+
+1. **Converts novel to screenplay** — Transforms prose into Fountain format
+2. **Determines act structure** — Analyzes story for 4-act structure
+3. **Generates scenes** — Creates screenplay scenes with proper formatting
+4. **Creates scene breakdowns** — Detailed visual composition for video generation
 
 ---
 
@@ -41,33 +48,46 @@ cp .env.example .env
 
 ## Usage
 
-### Quick Start — Full Pipeline
+### Phase 1: Novel Ingestion & Story Bible
 
 ```bash
+# Full Phase 1 pipeline
 python main.py run-all --pdf path/to/novel.pdf
+
+# Individual commands
+python main.py ingest --pdf path/to/novel.pdf
+python main.py extract-bible --novel-id <uuid>
+python main.py list-novels
+python main.py export-bible --novel-id <uuid>
 ```
 
-This will:
-1. Extract text from the PDF
-2. Chunk the narrative
-3. Extract the Story Bible using Claude
-4. Save everything to `./output/`
-
-### Individual Commands
+### Phase 2: Screenplay Conversion
 
 ```bash
-# Ingest only (no LLM calls)
-python main.py ingest --pdf path/to/novel.pdf
+# Full Phase 2 pipeline (screenplay + scene breakdowns)
+python main.py phase2 --novel-id <uuid>
 
-# Extract Story Bible from an already-ingested novel
-python main.py extract-bible --novel-id <uuid>
-
-# View all processed novels
-python main.py status
-
-# Export Story Bible to custom location
-python main.py export-bible --novel-id <uuid> --output my_bible.json
+# Individual commands
+python main.py convert-script --novel-id <uuid>
+python main.py breakdown-scenes --novel-id <uuid>
+python main.py list-scenes --novel-id <uuid>
 ```
+
+---
+
+## Output
+
+After running the full pipeline (Phase 1 + 2), you'll have:
+
+### Phase 1 Outputs:
+1. **SQLite database** at `./output/pipeline.db`
+2. **ChromaDB vector store** at `./output/chroma/`
+3. **Story Bible JSON** at `./output/story_bibles/<title>.json`
+
+### Phase 2 Outputs:
+1. **Fountain screenplay** at `./output/screenplays/<title>.fountain`
+2. **Screenplay JSON** at `./output/screenplays/<title>_screenplay.json`
+3. **Scene breakdowns** at `./output/scene_breakdowns/<title>_breakdown.json`
 
 ---
 
@@ -77,76 +97,10 @@ Edit `.env` to customize settings:
 
 ```
 ANTHROPIC_API_KEY=your_key_here
-ANTHROPIC_MODEL=claude-opus-4-5-20251101  # Use Opus for quality, Haiku for cost
+ANTHROPIC_MODEL=claude-opus-4-5-20251101  # Use Opus for quality
 CHUNK_SIZE_TOKENS=800
 CHUNK_OVERLAP_TOKENS=100
-DB_PATH=./output/pipeline.db
-CHROMA_PATH=./output/chroma
-```
-
----
-
-## Output
-
-After a successful run, you'll have:
-
-1. **SQLite database** at `./output/pipeline.db`
-2. **ChromaDB vector store** at `./output/chroma/`
-3. **Story Bible JSON** at `./output/story_bibles/<title>.json`
-
-The Story Bible JSON is the key deliverable and input for Phase 2.
-
----
-
-## Story Bible Structure
-
-```json
-{
-  "novel_title": "Example Novel",
-  "extraction_date": "2026-02-17T12:00:00",
-  "characters": [
-    {
-      "name": "Character Name",
-      "physical_description": "Detailed visual description for video generation...",
-      "role": "protagonist",
-      ...
-    }
-  ],
-  "locations": [
-    {
-      "name": "Location Name",
-      "visual_description": "Cinematographic description...",
-      ...
-    }
-  ],
-  "tone": { "genre": [...], "mood": "...", "style_notes": "..." },
-  "plot": { "logline": "...", "synopsis": "...", ... },
-  "timeline": { "era": "...", "technology_level": "..." },
-  "world_rules": [...],
-  "visual_style_notes": "..."
-}
-```
-
----
-
-## Cost Estimation
-
-For a ~300-page novel using **Claude Opus**:
-- **Input tokens:** ~500K-800K (~$4-6)
-- **Output tokens:** ~50K-100K (~$2-4)
-- **Total:** $6-10 per novel
-
-Use **Claude Haiku** for lower-cost extraction (~$0.50-1 per novel).
-
----
-
-## Testing
-
-Sample data is included for testing:
-
-```bash
-# Test with sample PDF (if provided)
-python main.py run-all --pdf sample_data/test_novel.pdf
+OUTPUT_DIR=./output
 ```
 
 ---
@@ -158,48 +112,60 @@ novel_pipeline/
 ├── main.py                      # CLI entry point
 ├── config.py                    # Configuration
 ├── requirements.txt             # Dependencies
-├── ingestion/                   # PDF extraction & chunking
+├── ingestion/                   # Phase 1: PDF extraction & chunking
 │   ├── pdf_extractor.py
 │   ├── chunker.py
 │   └── cleaner.py
-├── extraction/                  # Story Bible extraction
+├── extraction/                  # Phase 1: Story Bible extraction
 │   ├── story_bible_extractor.py
 │   ├── prompts.py
-│   └── models.py
+│   ├── models.py
+│   └── checkpoint.py
+├── screenplay/                  # Phase 2: Screenplay conversion
+│   ├── converter.py
+│   ├── formatter.py
+│   ├── scene_breakdown.py
+│   └── prompts.py
 ├── storage/                     # Database operations
 │   ├── database.py
 │   ├── vector_store.py
-│   └── schema.sql
+│   ├── schema.sql
+│   └── schema_phase2.sql
 └── output/                      # Generated files
     ├── pipeline.db
     ├── chroma/
-    └── story_bibles/
+    ├── story_bibles/
+    ├── screenplays/
+    └── scene_breakdowns/
 ```
 
 ---
 
-## Troubleshooting
+## Cost Estimation
 
-### "PDF has no extractable text"
-Your PDF may be a scanned image. Use an OCR'd version or run it through OCR software first.
+For a ~300-page novel using **Claude Opus**:
 
-### API Rate Limits
-The pipeline includes automatic retry logic with exponential backoff. If you hit rate limits, the extraction will pause and retry automatically.
+**Phase 1:**
+- Input tokens: ~500K-800K (~$4-6)
+- Output tokens: ~50K-100K (~$2-4)
+- Total: $6-10 per novel
 
-### Out of Memory
-For very large novels (>1000 pages), you may need to increase the batch size or process in multiple sessions.
+**Phase 2:**
+- Input tokens: ~200K-400K (~$2-3)
+- Output tokens: ~30K-60K (~$1-2)
+- Total: $3-5 per novel
+
+**Combined:** ~$9-15 per novel end-to-end
 
 ---
 
 ## Next Steps
 
-**Phase 2:** Script Conversion & Scene Breakdown (coming soon)
-
-The Story Bible from Phase 1 will be used to:
-- Convert novel chapters into screenplay format
-- Break down scenes for video generation
-- Maintain character and location consistency
+**Phase 3:** Video Generation from Scene Breakdowns (planned)
+- Use scene breakdown JSON to generate video clips
+- Assemble clips into complete video novel/movie
 
 ---
 
 *Built for the Novel-to-Screen Pipeline project.*
+
