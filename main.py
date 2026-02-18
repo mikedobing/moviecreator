@@ -649,6 +649,323 @@ def list_scenes(novel_id):
     console.print(f"\nTotal: {len(screenplay.scenes)} scenes, ~{screenplay.page_count_estimate} pages")
 
 
+# ==================== Phase 3 Commands ====================
+
+@cli.command()
+@click.option('--novel-id', required=True, help='Novel UUID')
+@click.option('--api', default='seedance', help='API provider: seedance, kling, or runwayml')
+def phase3(novel_id: str, api: str):
+    """Run Phase 3: Generate video prompts + build job queue."""
+    from prompts.video_prompt_engineer import VideoPromptEngineer
+    from prompts.validators import PromptValidator
+    from generation.job_queue import JobQueue
+    from generation.cost_estimator import CostEstimator
+
+    console.print("[bold cyan]Phase 3: Video Prompt Engineering & Generation Orchestration[/bold cyan]\n")
+
+    db = Database()
+
+    # Load Phase 1 Story Bible
+    story_bible_data = db.get_story_bible(novel_id)
+    if not story_bible_data:
+        console.print("[red]Error: Story Bible not found. Run Phase 1 first.[/red]")
+        return
+
+    # Load Phase 2 scene breakdowns
+    breakdown_path = None
+    output_dir = Path(config.OUTPUT_DIR) / "scene_breakdowns"
+    if output_dir.exists():
+        for f in output_dir.glob("*_breakdown.json"):
+            breakdown_path = f
+            break
+    
+    if not breakdown_path or not breakdown_path.exists():
+        console.print("[red]Error: Scene breakdowns not found. Run Phase 2 first.[/red]")
+        return
+
+    console.print(f"Loading breakdown from: {breakdown_path}")
+    try:
+        with open(breakdown_path, 'r') as f:
+            breakdowns = json.load(f)
+    except json.JSONDecodeError as e:
+        console.print(f"[red]JSON Error in {breakdown_path}: {e}[/red]")
+        with open(breakdown_path, 'r') as f:
+            console.print(f"First 100 bytes: {f.read(100)}")
+        return
+
+    console.print(f"[green]✓ Loaded {len(breakdowns)} scene breakdowns[/green]")
+
+    # --- Step 1: Generate prompts ---
+    console.print("\n[bold green]Step 1: Generating video prompts...[/bold green]")
+    engineer = VideoPromptEngineer(story_bible_data)
+
+    with Progress(SpinnerColumn(), TextColumn("{task.description}"), console=console) as progress:
+        task = progress.add_task(f"Processing {len(breakdowns)} scenes...", total=len(breakdowns))
+        all_prompts = []
+        for breakdown in breakdowns:
+            scene_prompts = engineer.generate_prompts_for_scene(breakdown, novel_id)
+            all_prompts.extend(scene_prompts)
+            progress.advance(task)
+
+    console.print(f"[green]✓ Generated {len(all_prompts)} video prompts from {len(breakdowns)} scenes[/green]")
+
+    # --- Step 2: Validate prompts ---
+    console.print("\n[bold green]Step 2: Validating prompts...[/bold green]")
+    validation = PromptValidator.validate_all(all_prompts)
+
+    if validation["all_valid"]:
+        console.print(f"[green]✓ All {validation['total_prompts']} prompts valid[/green]")
+    else:
+        console.print(f"[yellow]⚠ {validation['total_errors']} errors, {validation['total_warnings']} warnings[/yellow]")
+
+    if validation["total_warnings"] > 0:
+        console.print(f"[dim]  Warnings: {validation['total_warnings']}[/dim]")
+
+    # Temporal coherence
+    temporal = validation["temporal_report"]
+    if temporal.is_coherent:
+        console.print("[green]✓ Temporal coherence check passed[/green]")
+    else:
+        for issue in temporal.issues:
+            console.print(f"[yellow]  ⚠ {issue}[/yellow]")
+
+    # Character consistency
+    consistency = validation["consistency_reports"]
+    inconsistent = [r for r in consistency if not r.consistent_descriptions]
+    if not inconsistent:
+        console.print(f"[green]✓ Character consistency check passed ({len(consistency)} characters)[/green]")
+    else:
+        for r in inconsistent:
+            console.print(f"[yellow]  ⚠ {r.character_name}: {', '.join(r.discrepancies)}[/yellow]")
+
+    # --- Step 3: Save prompts to database ---
+    console.print("\n[bold green]Step 3: Saving prompts to database...[/bold green]")
+    with db._get_connection() as conn:
+        for prompt in all_prompts:
+            conn.execute(
+                """INSERT OR REPLACE INTO video_prompts
+                   (id, scene_id, novel_id, clip_index, prompt_type, prompt_text,
+                    negative_prompt, duration_seconds, aspect_ratio, motion_intensity,
+                    camera_movement, reference_image_path, character_consistency_tags,
+                    audio_prompt, generation_params, estimated_cost_usd, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (prompt.prompt_id, prompt.scene_id, prompt.novel_id, prompt.clip_index,
+                 prompt.prompt_type, prompt.prompt_text, prompt.negative_prompt,
+                 prompt.duration_seconds, prompt.aspect_ratio, prompt.motion_intensity,
+                 prompt.camera_movement, prompt.reference_image_path,
+                 json.dumps(prompt.character_consistency_tags),
+                 prompt.audio_prompt, json.dumps(prompt.generation_params),
+                 prompt.estimated_cost_usd, prompt.created_at)
+            )
+        conn.commit()
+    console.print(f"[green]✓ Saved {len(all_prompts)} prompts to database[/green]")
+
+    # --- Step 4: Build job queue ---
+    console.print("\n[bold green]Step 4: Building job queue...[/bold green]")
+    job_queue = JobQueue(db)
+    jobs = job_queue.add_jobs_from_prompts(all_prompts, api_provider=api)
+    console.print(f"[green]✓ Created {len(jobs)} generation jobs for {api}[/green]")
+
+    # --- Step 5: Cost estimation ---
+    console.print("\n[bold green]Step 5: Cost estimation...[/bold green]")
+    estimator = CostEstimator(api_provider=api)
+    cost = estimator.estimate_novel_cost(all_prompts)
+
+    console.print(f"  Total clips: [cyan]{cost.total_clips}[/cyan]")
+    console.print(f"  Total video duration: [cyan]{cost.total_duration_minutes} minutes[/cyan]")
+    console.print(f"  Estimated cost ({api}): [cyan]${cost.estimated_cost_usd:.2f} USD[/cyan]")
+
+    # Compare providers
+    comparison = estimator.compare_providers(all_prompts)
+    console.print("\n  Provider cost comparison:")
+    for provider, prov_cost in comparison.items():
+        marker = " ← selected" if provider == api else ""
+        console.print(f"    {provider}: ${prov_cost:.2f}{marker}")
+
+    # --- Step 6: Export outputs ---
+    console.print("\n[bold green]Step 6: Exporting outputs...[/bold green]")
+
+    # Export prompts JSON
+    prompts_dir = Path(config.OUTPUT_DIR) / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Determine title for filenames
+    title = story_bible_data.get("novel_title", "novel").lower().replace(" ", "_")
+    prompts_path = prompts_dir / f"{title}_prompts.json"
+    
+    prompts_data = [p.model_dump() for p in all_prompts]
+    with open(prompts_path, 'w') as f:
+        json.dump(prompts_data, f, indent=2)
+    console.print(f"[green]✓ Exported prompts to {prompts_path}[/green]")
+
+    # Export job queue JSON
+    jobs_dir = Path(config.OUTPUT_DIR) / "jobs"
+    jobs_dir.mkdir(parents=True, exist_ok=True)
+    queue_path = jobs_dir / f"{title}_{api}_queue.json"
+    job_queue.export_queue(novel_id, str(queue_path))
+    console.print(f"[green]✓ Exported job queue to {queue_path}[/green]")
+
+    # Summary
+    console.print("\n" + "=" * 60)
+    console.print("[bold green]Phase 3 Complete![/bold green]")
+    console.print(f"  Scenes processed: {len(breakdowns)}")
+    console.print(f"  Prompts generated: {len(all_prompts)}")
+    console.print(f"  Jobs queued: {len(jobs)}")
+    console.print(f"  Estimated cost: ${cost.estimated_cost_usd:.2f} USD ({api})")
+    console.print(f"  Estimated duration: {cost.total_duration_minutes} min of video")
+    if validation["total_errors"] == 0:
+        console.print("  Validation: [green]✓ PASSED[/green]")
+    else:
+        console.print(f"  Validation: [yellow]⚠ {validation['total_errors']} errors[/yellow]")
+    console.print("=" * 60)
+
+
+@cli.command('generate-prompts')
+@click.option('--novel-id', required=True, help='Novel UUID')
+def generate_prompts(novel_id: str):
+    """Generate video prompts from scene breakdowns (Phase 3 Step 1 only)."""
+    from prompts.video_prompt_engineer import VideoPromptEngineer
+
+    console.print("[bold cyan]Generating video prompts...[/bold cyan]\n")
+    db = Database()
+    story_bible_data = db.get_story_bible(novel_id)
+    if not story_bible_data:
+        console.print("[red]Error: Story Bible not found.[/red]")
+        return
+
+    # Find breakdowns
+    output_dir = Path(config.OUTPUT_DIR) / "scene_breakdowns"
+    breakdown_path = None
+    if output_dir.exists():
+        for f in output_dir.glob("*_breakdown.json"):
+            breakdown_path = f
+            break
+    if not breakdown_path:
+        console.print("[red]Error: Scene breakdowns not found.[/red]")
+        return
+
+    with open(breakdown_path, 'r') as f:
+        breakdowns = json.load(f)
+
+    engineer = VideoPromptEngineer(story_bible_data)
+    all_prompts = engineer.generate_prompts_for_all_scenes(breakdowns, novel_id)
+
+    # Save prompts JSON
+    title = story_bible_data.get("novel_title", "novel").lower().replace(" ", "_")
+    prompts_dir = Path(config.OUTPUT_DIR) / "prompts"
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+    prompts_path = prompts_dir / f"{title}_prompts.json"
+
+    with open(prompts_path, 'w') as f:
+        json.dump([p.model_dump() for p in all_prompts], f, indent=2)
+
+    console.print(f"[green]✓ Generated {len(all_prompts)} prompts → {prompts_path}[/green]")
+
+
+@cli.command('validate-prompts')
+@click.option('--novel-id', required=True, help='Novel UUID')
+def validate_prompts(novel_id: str):
+    """Validate generated video prompts."""
+    from prompts.validators import PromptValidator
+    from extraction.models import VideoPrompt as VP
+
+    console.print("[bold cyan]Validating video prompts...[/bold cyan]\n")
+
+    # Load prompts from JSON
+    prompts_dir = Path(config.OUTPUT_DIR) / "prompts"
+    prompt_file = None
+    if prompts_dir.exists():
+        for f in prompts_dir.glob("*_prompts.json"):
+            prompt_file = f
+            break
+    if not prompt_file:
+        console.print("[red]Error: No prompts found. Run generate-prompts first.[/red]")
+        return
+
+    with open(prompt_file, 'r') as f:
+        prompts_data = json.load(f)
+    prompts = [VP(**p) for p in prompts_data]
+
+    validation = PromptValidator.validate_all(prompts)
+
+    console.print(f"Total prompts: {validation['total_prompts']}")
+    console.print(f"Errors: {validation['total_errors']}")
+    console.print(f"Warnings: {validation['total_warnings']}")
+    console.print(f"All valid: {'[green]Yes[/green]' if validation['all_valid'] else '[red]No[/red]'}")
+
+    # Character consistency
+    for report in validation["consistency_reports"]:
+        status = "[green]✓[/green]" if report.consistent_descriptions else "[yellow]⚠[/yellow]"
+        console.print(f"  {status} {report.character_name}: {report.total_appearances} appearances")
+
+    # Temporal
+    temporal = validation["temporal_report"]
+    status = "[green]✓[/green]" if temporal.is_coherent else "[yellow]⚠[/yellow]"
+    console.print(f"  {status} Temporal coherence")
+    for issue in temporal.issues:
+        console.print(f"    [yellow]{issue}[/yellow]")
+
+
+@cli.command('estimate-cost')
+@click.option('--novel-id', required=True, help='Novel UUID')
+@click.option('--api', default='seedance', help='API provider: seedance, kling, or runwayml')
+def estimate_cost(novel_id: str, api: str):
+    """Estimate video generation cost."""
+    from generation.cost_estimator import CostEstimator
+    from extraction.models import VideoPrompt as VP
+
+    console.print("[bold cyan]Estimating generation cost...[/bold cyan]\n")
+
+    prompts_dir = Path(config.OUTPUT_DIR) / "prompts"
+    prompt_file = None
+    if prompts_dir.exists():
+        for f in prompts_dir.glob("*_prompts.json"):
+            prompt_file = f
+            break
+    if not prompt_file:
+        console.print("[red]Error: No prompts found.[/red]")
+        return
+
+    with open(prompt_file, 'r') as f:
+        prompts = [VP(**p) for p in json.load(f)]
+
+    estimator = CostEstimator(api_provider=api)
+    cost = estimator.estimate_novel_cost(prompts)
+
+    console.print(f"Clips: {cost.total_clips}")
+    console.print(f"Video duration: {cost.total_duration_minutes} minutes")
+    console.print(f"Estimated cost ({api}): [bold]${cost.estimated_cost_usd:.2f} USD[/bold]")
+
+    console.print("\nProvider comparison:")
+    for provider, prov_cost in estimator.compare_providers(prompts).items():
+        console.print(f"  {provider}: ${prov_cost:.2f}")
+
+
+@cli.command('export-prompts')
+@click.option('--novel-id', required=True, help='Novel UUID')
+@click.option('--output', default=None, help='Output path')
+def export_prompts(novel_id: str, output: str):
+    """Export generated prompts to JSON."""
+    prompts_dir = Path(config.OUTPUT_DIR) / "prompts"
+    prompt_file = None
+    if prompts_dir.exists():
+        for f in prompts_dir.glob("*_prompts.json"):
+            prompt_file = f
+            break
+    if not prompt_file:
+        console.print("[red]Error: No prompts found.[/red]")
+        return
+
+    if output:
+        import shutil
+        shutil.copy2(prompt_file, output)
+        console.print(f"[green]✓ Exported prompts to {output}[/green]")
+    else:
+        console.print(f"[green]Prompts at: {prompt_file}[/green]")
+        with open(prompt_file, 'r') as f:
+            data = json.load(f)
+        console.print(f"Total prompts: {len(data)}")
+
+
 if __name__ == '__main__':
     cli()
-

@@ -154,3 +154,98 @@ class SceneBreakdown(BaseModel):
     
     # Phase 3 ready flag
     prompt_ready: bool = False  # True if all required fields are populated
+
+
+# ==================== Phase 3 Models ====================
+
+class ShotSpec(BaseModel):
+    """Specification for a single shot/clip in a scene."""
+    shot_type: str  # "establishing" | "character_intro" | "dialogue_two_shot" | "dialogue_over_shoulder" | "action" | "reaction" | "transition" | "insert" | "montage"
+    clip_index: int  # Position in scene (0-indexed)
+    characters: List[str] = Field(default_factory=list)  # Character names in this shot
+    camera_movement: str = "static"  # "static" | "pan" | "tilt" | "dolly" | "push_in" | "pull_back" | "handheld" | "tracking"
+    framing: str = "medium"  # "wide" | "medium" | "close_up" | "extreme_close_up"
+    duration_seconds: int = 8
+    description: str = ""  # Brief description of what happens
+
+
+class VideoPrompt(BaseModel):
+    """A complete video generation prompt for a single clip."""
+    prompt_id: str  # UUID
+    scene_id: str
+    novel_id: str
+    clip_index: int
+    prompt_type: str  # "establishing" | "character_intro" | "dialogue" | "action" | "reaction" | "transition" | "insert" | "montage"
+    prompt_text: str  # The actual prompt for the video API
+    negative_prompt: str = ""  # What NOT to generate
+    duration_seconds: int = 8  # Target clip length
+    aspect_ratio: str = "16:9"  # "16:9" | "9:16" | "1:1"
+    motion_intensity: str = "medium"  # "low" | "medium" | "high"
+    camera_movement: str = "static"
+    reference_image_path: Optional[str] = None
+    character_consistency_tags: List[str] = Field(default_factory=list)  # Character appearance anchors
+    audio_prompt: str = ""  # Audio generation guidance
+    generation_params: Dict = Field(default_factory=dict)  # API-specific params
+    estimated_cost_usd: float = 0.0
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+
+
+class GenerationJob(BaseModel):
+    """A video generation job for Phase 4 execution."""
+    job_id: str  # UUID
+    prompt_id: str
+    novel_id: str
+    scene_id: str
+    clip_index: int
+    status: str = "queued"  # "queued" | "running" | "complete" | "failed" | "skipped"
+    api_provider: str = "seedance"  # "seedance" | "kling" | "runwayml"
+    api_job_id: Optional[str] = None
+    output_video_path: Optional[str] = None
+    generation_time_seconds: Optional[int] = None
+    actual_cost_usd: Optional[float] = None
+    error_message: Optional[str] = None
+    created_at: str = Field(default_factory=lambda: datetime.utcnow().isoformat())
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+
+
+class ValidationResult(BaseModel):
+    """Result of prompt validation."""
+    is_valid: bool
+    errors: List[str] = Field(default_factory=list)
+    warnings: List[str] = Field(default_factory=list)
+
+
+class ConsistencyReport(BaseModel):
+    """Character consistency check result."""
+    character_name: str
+    total_appearances: int
+    consistent_descriptions: bool
+    discrepancies: List[str] = Field(default_factory=list)
+
+
+class TemporalReport(BaseModel):
+    """Temporal coherence check result."""
+    is_coherent: bool
+    issues: List[str] = Field(default_factory=list)
+
+
+class QueueStats(BaseModel):
+    """Statistics for the generation job queue."""
+    total_jobs: int
+    queued: int = 0
+    running: int = 0
+    complete: int = 0
+    failed: int = 0
+    estimated_total_cost_usd: float = 0.0
+    estimated_total_duration_minutes: float = 0.0
+
+
+class CostBreakdown(BaseModel):
+    """Detailed cost estimation breakdown."""
+    total_clips: int
+    total_duration_minutes: float
+    estimated_cost_usd: float
+    breakdown_by_scene: Dict[str, float] = Field(default_factory=dict)
+    breakdown_by_resolution: Dict[str, float] = Field(default_factory=dict)
+

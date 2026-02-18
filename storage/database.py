@@ -39,6 +39,13 @@ class Database:
                 schema_phase2_sql = f.read()
             schema_sql += "\n" + schema_phase2_sql
         
+        # Load Phase 3 schema
+        schema_phase3_path = Path(__file__).parent / "schema_phase3.sql"
+        if schema_phase3_path.exists():
+            with open(schema_phase3_path, 'r') as f:
+                schema_phase3_sql = f.read()
+            schema_sql += "\n" + schema_phase3_sql
+        
         with self._get_connection() as conn:
             conn.executescript(schema_sql)
             conn.commit()
@@ -192,7 +199,16 @@ class Database:
             ).fetchone()
             
             if row:
-                return json.loads(row['bible_json'])
+                json_str = row['bible_json']
+                try:
+                    return json.loads(json_str)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to decode bible_json for novel {novel_id}")
+                    logger.error(f"Error: {e}")
+                    logger.error(f"Content length: {len(json_str) if json_str else 0}")
+                    if json_str:
+                         logger.error(f"First 100 chars: {json_str[:100]}")
+                    raise
             return None
     
     def insert_pipeline_run(
