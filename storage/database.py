@@ -45,6 +45,13 @@ class Database:
             with open(schema_phase3_path, 'r') as f:
                 schema_phase3_sql = f.read()
             schema_sql += "\n" + schema_phase3_sql
+            
+        # Load Phase 4 schema
+        schema_phase4_path = Path(__file__).parent / "schema_phase4.sql"
+        if schema_phase4_path.exists():
+            with open(schema_phase4_path, 'r') as f:
+                schema_phase4_sql = f.read()
+            schema_sql += "\n" + schema_phase4_sql
         
         with self._get_connection() as conn:
             conn.executescript(schema_sql)

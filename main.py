@@ -798,6 +798,124 @@ def phase3(novel_id: str, api: str):
         json.dump(prompts_data, f, indent=2)
     console.print(f"[green]✓ Exported prompts to {prompts_path}[/green]")
 
+
+# ==================== Phase 4 Commands ====================
+
+@cli.command()
+@click.option('--novel-id', required=True, help='Novel UUID')
+@click.option('--max-concurrent', default=5, help='Max concurrent jobs')
+@click.option('--resume', is_flag=True, default=True, help='Resume from last state')
+def execute_queue(novel_id, max_concurrent, resume):
+    """Run video generation job queue (Phase 4)."""
+    import asyncio
+    from execution.job_executor import JobExecutor
+    from execution.api_clients import SeedanceClient, RateLimits
+    from monitoring.progress_tracker import ProgressTracker
+    
+    console.print("[bold cyan]Phase 4: Video Generation Execution[/bold cyan]\n")
+    
+    db = Database()
+    
+    # Initialize components
+    # In production, we would load API key from env/config
+    api_key = "test_key" 
+    console.print("[yellow]Note: Using placeholder API key and client[/yellow]")
+    
+    client = SeedanceClient(api_key=api_key, base_url="https://api.example.com")
+    executor = JobExecutor(db, client=client)
+    
+    # Run execution
+    console.print(f"Starting execution for novel [cyan]{novel_id}[/cyan]...")
+    console.print(f"Max concurrent jobs: {max_concurrent}")
+    console.print(f"Resume mode: {resume}")
+    
+    try:
+        # Since we are in a synchronous CLI command, we need to run async code
+        report = asyncio.run(executor.execute_queue(
+            novel_id=novel_id,
+            max_concurrent_jobs=max_concurrent,
+            resume=resume
+        ))
+        
+        console.print("\n[bold green]✓ Execution Complete![/bold green]\n")
+        table = Table(show_header=False)
+        table.add_row("Total Jobs", str(report.total_jobs))
+        table.add_row("Completed", f"[green]{report.completed}[/green]")
+        table.add_row("Failed", f"[red]{report.failed}[/red]")
+        table.add_row("Skipped", f"[yellow]{report.skipped}[/yellow]")
+        console.print(table)
+        
+    except Exception as e:
+        console.print(f"[red]Error during execution: {e}[/red]")
+        logger.exception("Execution failed")
+
+
+@cli.command()
+@click.option('--scene-id', required=True, help='Scene UUID')
+@click.option('--output', required=True, help='Output MP4 path')
+def assemble_scene(scene_id, output):
+    """Assemble clips for a single scene."""
+    from assembly.clip_assembler import ClipAssembler
+    import glob
+    
+    console.print("[bold cyan]Scene Assembly[/bold cyan]\n")
+    
+    assembler = ClipAssembler()
+    
+    # Find clips for this scene
+    # This assumes a specific directory structure. In a real app we might query DB for paths.
+    # For now, let's assume we can find them in output/clips/<novel_id>/<scene_id>/*.mp4
+    # But we only have scene_id here. 
+    # Let's search recursively in output/clips for the scene_id folder
+    
+    base_dir = config.OUTPUT_DIR / "clips"
+    scene_dir = None
+    
+    # Simple search
+    for d in base_dir.glob("*/*"):
+        if d.name == scene_id:
+            scene_dir = d
+            break
+            
+    if not scene_dir:
+        console.print(f"[red]Error: Could not find clip directory for scene {scene_id}[/red]")
+        return
+        
+    clip_paths = sorted([str(p) for p in scene_dir.glob("*.mp4")])
+    
+    if not clip_paths:
+        console.print(f"[red]Error: No mp4 clips found in {scene_dir}[/red]")
+        return
+        
+    console.print(f"Found {len(clip_paths)} clips in {scene_dir}")
+    console.print(f"Assembling to: {output}...")
+    
+    result = assembler.assemble_scene(scene_id, clip_paths, output)
+    
+    if result.success:
+        console.print(f"[green]✓ Scene assembled successfully![/green]")
+    else:
+        console.print(f"[red]Error: {result.error}[/red]")
+
+
+@cli.command()
+@click.option('--novel-id', required=True, help='Novel UUID')
+def phase4(novel_id):
+    """Run full Phase 4: Generate & Assemble."""
+    console.print("[bold cyan]Phase 4: Full Pipeline[/bold cyan]\n")
+    
+    ctx = click.get_current_context()
+    
+    # 1. Execute Queue
+    console.print("[bold]Step 1: Executing Job Queue[/bold]")
+    ctx.invoke(execute_queue, novel_id=novel_id, max_concurrent=5, resume=True)
+    
+    # 2. Assemble Scenes (Placeholder loop)
+    # In a real implementation this would iterate over all scenes and assemble them
+    console.print("\n[bold]Step 2: Assembling Scenes[/bold]")
+    console.print("[yellow]Scene assembly in 'phase4' command is currently a placeholder. Use 'assemble-scene' for individual scenes.[/yellow]")
+
+
     # Export job queue JSON
     jobs_dir = Path(config.OUTPUT_DIR) / "jobs"
     jobs_dir.mkdir(parents=True, exist_ok=True)
